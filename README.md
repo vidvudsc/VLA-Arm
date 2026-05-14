@@ -55,6 +55,9 @@ python -m vla_arm.train \
   --device mps \
   --steps 2000 \
   --batch_size 64 \
+  --dataset_mode episode \
+  --episode_count 200 \
+  --val_episode_count 40 \
   --action_chunk_size 8 \
   --temporal_ensemble \
   --eval_every 250 \
@@ -80,6 +83,18 @@ Success means the object has been released inside the bowl. This is behavior clo
 ## Training Notes
 
 This is not a pretrained transformer yet. The policy transformer starts from random weights and learns by supervised behavior cloning from the synthetic expert.
+
+Dataset modes:
+
+```text
+transition:
+  generate one expert rollout per sample, then train on one sampled transition
+
+episode:
+  prebuild full synthetic expert episodes, then sample action chunks from those episodes
+```
+
+`episode` mode is closer to LeRobot/ACT-style imitation learning because the training distribution comes from a fixed bank of coherent demonstrations.
 
 The training loop tracks:
 

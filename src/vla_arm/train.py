@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from .data import ExpertTransitionDataset
+from .data import ExpertEpisodeDataset, ExpertTransitionDataset
 from .env import ACTION_LABELS, ArmConfig
 from .eval import rollout
 from .model import PolicyConfig, VLAArmPolicy, count_parameters
@@ -228,6 +228,10 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.05)
     parser.add_argument("--dataset_len", type=int, default=100_000)
     parser.add_argument("--val_len", type=int, default=2048)
+    parser.add_argument("--dataset_mode", choices=("transition", "episode"), default="transition")
+    parser.add_argument("--episode_count", type=int, default=200)
+    parser.add_argument("--val_episode_count", type=int, default=40)
+    parser.add_argument("--rollout_prefix_max", type=int, default=120)
     parser.add_argument("--cache_samples", type=int, default=0, help="Pre-render this many train samples as uint8 tensors; 0 disables cache.")
     parser.add_argument("--cache_val_samples", type=int, default=1024, help="Pre-render this many validation samples as uint8 tensors; 0 disables cache.")
     parser.add_argument("--action_chunk_size", type=int, default=8, help="Number of future expert actions predicted from each current observation.")
@@ -273,26 +277,52 @@ def main() -> None:
         dropout=args.dropout,
         action_chunk_size=args.action_chunk_size,
     )
-    train_dataset = ExpertTransitionDataset(
-        args.dataset_len,
-        cfg=arm_cfg,
-        seed=1234,
-        cache_samples=args.cache_samples,
-        event_sample_prob=args.event_sample_prob,
-        recovery_noise_prob=args.recovery_noise_prob,
-        recovery_noise_steps=args.recovery_noise_steps,
-        action_chunk_size=args.action_chunk_size,
-    )
-    val_dataset = ExpertTransitionDataset(
-        args.val_len,
-        cfg=arm_cfg,
-        seed=900_000,
-        cache_samples=args.cache_val_samples,
-        event_sample_prob=args.event_sample_prob,
-        recovery_noise_prob=0.0,
-        recovery_noise_steps=0,
-        action_chunk_size=args.action_chunk_size,
-    )
+    if args.dataset_mode == "episode":
+        train_dataset = ExpertEpisodeDataset(
+            args.dataset_len,
+            episode_count=args.episode_count,
+            cfg=arm_cfg,
+            seed=1234,
+            cache_samples=args.cache_samples,
+            event_sample_prob=args.event_sample_prob,
+            recovery_noise_prob=args.recovery_noise_prob,
+            recovery_noise_steps=args.recovery_noise_steps,
+            action_chunk_size=args.action_chunk_size,
+        )
+        val_dataset = ExpertEpisodeDataset(
+            args.val_len,
+            episode_count=args.val_episode_count,
+            cfg=arm_cfg,
+            seed=900_000,
+            cache_samples=args.cache_val_samples,
+            event_sample_prob=args.event_sample_prob,
+            recovery_noise_prob=0.0,
+            recovery_noise_steps=0,
+            action_chunk_size=args.action_chunk_size,
+        )
+    else:
+        train_dataset = ExpertTransitionDataset(
+            args.dataset_len,
+            cfg=arm_cfg,
+            seed=1234,
+            rollout_prefix_max=args.rollout_prefix_max,
+            cache_samples=args.cache_samples,
+            event_sample_prob=args.event_sample_prob,
+            recovery_noise_prob=args.recovery_noise_prob,
+            recovery_noise_steps=args.recovery_noise_steps,
+            action_chunk_size=args.action_chunk_size,
+        )
+        val_dataset = ExpertTransitionDataset(
+            args.val_len,
+            cfg=arm_cfg,
+            seed=900_000,
+            rollout_prefix_max=args.rollout_prefix_max,
+            cache_samples=args.cache_val_samples,
+            event_sample_prob=args.event_sample_prob,
+            recovery_noise_prob=0.0,
+            recovery_noise_steps=0,
+            action_chunk_size=args.action_chunk_size,
+        )
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -317,6 +347,9 @@ def main() -> None:
     log_line(f"device: {device}")
     log_line(f"params: {count_parameters(model):,}")
     log_line(f"continuous action: {ACTION_LABELS}")
+    log_line(f"dataset mode: {args.dataset_mode}")
+    if args.dataset_mode == "episode":
+        log_line(f"episodes: train {args.episode_count:,} | val {args.val_episode_count:,}")
     log_line(f"train samples: {len(train_dataset):,} | val samples: {len(val_dataset):,}")
     log_line(json.dumps({"policy": asdict(policy_cfg), "arm": asdict(arm_cfg)}, indent=2))
 
