@@ -18,6 +18,7 @@ class PolicyConfig:
     heads: int = 5
     mlp_ratio: float = 3.0
     dropout: float = 0.05
+    action_chunk_size: int = 1
 
 
 class VLAArmPolicy(nn.Module):
@@ -26,6 +27,8 @@ class VLAArmPolicy(nn.Module):
         self.cfg = cfg or PolicyConfig()
         if self.cfg.image_size % self.cfg.patch_size != 0:
             raise ValueError("image_size must be divisible by patch_size")
+        if self.cfg.action_chunk_size < 1:
+            raise ValueError("action_chunk_size must be at least 1")
 
         grid = self.cfg.image_size // self.cfg.patch_size
         self.num_patches = grid * grid
@@ -56,7 +59,7 @@ class VLAArmPolicy(nn.Module):
         self.head = nn.Sequential(
             nn.Linear(self.cfg.hidden, self.cfg.hidden),
             nn.GELU(),
-            nn.Linear(self.cfg.hidden, ACTION_DIM),
+            nn.Linear(self.cfg.hidden, ACTION_DIM * self.cfg.action_chunk_size),
             nn.Tanh(),
         )
 
@@ -67,7 +70,8 @@ class VLAArmPolicy(nn.Module):
         tokens = torch.cat([cls, robot_token, patches], dim=1)
         tokens = tokens + self.pos[:, : tokens.shape[1]]
         tokens = self.transformer(tokens)
-        return self.head(self.norm(tokens[:, 0]))
+        action = self.head(self.norm(tokens[:, 0]))
+        return action.view(image.shape[0], self.cfg.action_chunk_size, ACTION_DIM)
 
 
 def count_parameters(model: nn.Module) -> int:

@@ -17,13 +17,21 @@ joint-angle proprioception
 magnetic gripper / holding state
 ```
 
-The policy is a small transformer over 16x16 image patches plus one robot-state token. It predicts a continuous 3D action:
+The policy is a small transformer over 16x16 image patches plus one robot-state token. It predicts a short chunk of continuous 3D actions:
 
 ```text
 shoulder velocity in [-1, 1]
 elbow velocity in [-1, 1]
 magnet command in [-1, 1]
 ```
+
+With `--action_chunk_size 8`, the model predicts:
+
+```text
+current RGB image + current robot state -> next 8 actions
+```
+
+Rollout can use temporal ensembling over overlapping chunks with `--temporal_ensemble`.
 
 The magnet command is persistent:
 
@@ -47,7 +55,10 @@ python -m vla_arm.train \
   --device mps \
   --steps 2000 \
   --batch_size 64 \
+  --action_chunk_size 8 \
+  --temporal_ensemble \
   --eval_every 250 \
+  --eval_seed_mode fixed \
   --val_batches 16 \
   --rollout_episodes 12 \
   --gif_episodes 2 \
@@ -58,6 +69,7 @@ python -m vla_arm.eval \
   --checkpoint runs/v0/policy_last.pt \
   --device mps \
   --episodes 100 \
+  --temporal_ensemble \
   --render_dir runs/v0/eval_renders
 ```
 
@@ -74,8 +86,11 @@ The training loop tracks:
 - weighted train loss
 - validation loss on held-out synthetic seeds
 - rollout success rate
+- pickup/release rate and closest object/bowl distances
 - placement rate
 - policy GIFs from live rollouts
+
+By default, training uses `--eval_seed_mode fixed`, so every checkpoint is evaluated and rendered on the same rollout seeds. This makes GIFs comparable across training time. Use `--eval_seed_mode step` when you want each checkpoint to sample different rollout scenes.
 
 Pickup/release transitions are still brief, so the loss upweights the magnet output dimension and the dataset deliberately samples those transition moments some of the time via `--event_sample_prob`.
 

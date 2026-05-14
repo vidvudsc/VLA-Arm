@@ -21,6 +21,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         event_sample_prob: float = 0.35,
         recovery_noise_prob: float = 0.35,
         recovery_noise_steps: int = 5,
+        action_chunk_size: int = 1,
     ):
         self.cfg = cfg or ArmConfig()
         self.seed = int(seed)
@@ -28,6 +29,9 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         self.event_sample_prob = float(event_sample_prob)
         self.recovery_noise_prob = float(recovery_noise_prob)
         self.recovery_noise_steps = int(recovery_noise_steps)
+        self.action_chunk_size = int(action_chunk_size)
+        if self.action_chunk_size < 1:
+            raise ValueError("action_chunk_size must be at least 1")
         self.cache: list[dict[str, torch.Tensor]] | None = None
         if cache_samples > 0:
             self.length = int(min(length, cache_samples))
@@ -88,11 +92,22 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
                 state = apply_action(state, noisy_action, self.cfg)
             action = expert_action(state, self.cfg)
 
+        action_chunk = []
+        chunk_state = state
+        for chunk_idx in range(self.action_chunk_size):
+            if chunk_idx == 0:
+                chunk_action = action
+            else:
+                chunk_action = expert_action(chunk_state, self.cfg)
+            action_chunk.append(chunk_action)
+            if not is_success(chunk_state, self.cfg):
+                chunk_state = apply_action(chunk_state, chunk_action, self.cfg)
+
         rendered = render_state(state, self.cfg)
         image = image_to_uint8_tensor(rendered) if cache_uint8 else image_to_tensor(rendered)
         robot = torch.from_numpy(state_vector(state, self.cfg))
         return {
             "image": image,
             "robot": robot,
-            "action": torch.from_numpy(action),
+            "action": torch.from_numpy(np.stack(action_chunk).astype(np.float32)),
         }

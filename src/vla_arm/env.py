@@ -26,6 +26,8 @@ class ArmConfig:
     min_spawn_radius: float = 36.0
     max_spawn_radius: float = 120.0
     max_steps: int = 150
+    avoid_initial_object_occlusion: bool = True
+    object_occlusion_clearance: float = 5.0
 
 
 @dataclass
@@ -91,6 +93,31 @@ def state_vector(state: ArmState, cfg: ArmConfig) -> np.ndarray:
 
 def distance(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def point_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    px, py = point
+    sx, sy = start
+    ex, ey = end
+    vx, vy = ex - sx, ey - sy
+    wx, wy = px - sx, py - sy
+    seg_len_sq = vx * vx + vy * vy
+    if seg_len_sq <= 1e-9:
+        return distance(point, start)
+    t = max(0.0, min(1.0, (wx * vx + wy * vy) / seg_len_sq))
+    closest = (sx + t * vx, sy + t * vy)
+    return distance(point, closest)
+
+
+def object_is_occluded_by_arm(state: ArmState, cfg: ArmConfig) -> bool:
+    base, joint, end = forward_kinematics(state, cfg)
+    obj = object_position(state, cfg)
+    clearance = cfg.object_radius + cfg.object_occlusion_clearance
+    return min(point_segment_distance(obj, base, joint), point_segment_distance(obj, joint, end)) < clearance
 
 
 def distance_to_object(state: ArmState, cfg: ArmConfig) -> float:
@@ -191,17 +218,21 @@ def sample_reachable_point(rng: random.Random, cfg: ArmConfig) -> tuple[float, f
 
 def make_scene(seed: int, cfg: ArmConfig) -> ArmState:
     rng = random.Random(seed)
-    obj = ObjectSpec(*sample_reachable_point(rng, cfg))
     min_separation = cfg.object_radius + cfg.bowl_radius + 34.0
-    for _ in range(500):
-        bowl = BowlSpec(*sample_reachable_point(rng, cfg))
-        if distance((obj.x, obj.y), (bowl.x, bowl.y)) > min_separation:
-            break
-    else:
-        raise RuntimeError("failed to sample a non-overlapping object/bowl pair")
+    for _ in range(1000):
+        obj = ObjectSpec(*sample_reachable_point(rng, cfg))
+        for _ in range(500):
+            bowl = BowlSpec(*sample_reachable_point(rng, cfg))
+            if distance((obj.x, obj.y), (bowl.x, bowl.y)) > min_separation:
+                break
+        else:
+            continue
 
-    start_target = obj if rng.random() < 0.75 else bowl
-    shoulder, elbow = inverse_kinematics(start_target.x, start_target.y, cfg)
-    shoulder = wrap_angle(shoulder + rng.uniform(-1.6, 1.6))
-    elbow = wrap_angle(elbow + rng.uniform(-1.3, 1.3))
-    return ArmState(shoulder=shoulder, elbow=elbow, obj=obj, bowl=bowl)
+        start_target = obj if rng.random() < 0.75 else bowl
+        shoulder, elbow = inverse_kinematics(start_target.x, start_target.y, cfg)
+        shoulder = wrap_angle(shoulder + rng.uniform(-1.6, 1.6))
+        elbow = wrap_angle(elbow + rng.uniform(-1.3, 1.3))
+        state = ArmState(shoulder=shoulder, elbow=elbow, obj=obj, bowl=bowl)
+        if not cfg.avoid_initial_object_occlusion or not object_is_occluded_by_arm(state, cfg):
+            return state
+    raise RuntimeError("failed to sample a visible non-occluded scene")
