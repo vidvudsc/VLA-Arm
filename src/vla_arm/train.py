@@ -43,6 +43,7 @@ def weighted_action_mse(
     joint_dim_weight: float,
     magnet_dim_weight: float,
     magnet_event_weight: float,
+    magnet_release_weight: float,
     loss_type: str = "mse",
     huber_delta: float = 0.25,
 ) -> torch.Tensor:
@@ -63,7 +64,8 @@ def weighted_action_mse(
     dim_weight[..., :2] = joint_dim_weight
     dim_weight[..., 2] = magnet_dim_weight
     event_weight = torch.where(target[..., 2].abs() > 0.5, magnet_event_weight, 1.0).unsqueeze(-1)
-    weights = dim_weight * event_weight
+    release_weight = torch.where(target[..., 2] < -0.5, magnet_release_weight, 1.0).unsqueeze(-1)
+    weights = dim_weight * event_weight * release_weight
     return (base_loss * weights).sum() / weights.sum().clamp_min(1e-6)
 
 
@@ -73,6 +75,7 @@ def action_loss(
     joint_dim_weight: float,
     magnet_dim_weight: float,
     magnet_event_weight: float,
+    magnet_release_weight: float,
     joint_direction_weight: float,
     loss_type: str = "mse",
     huber_delta: float = 0.25,
@@ -83,6 +86,7 @@ def action_loss(
         joint_dim_weight,
         magnet_dim_weight,
         magnet_event_weight,
+        magnet_release_weight,
         loss_type,
         huber_delta,
     )
@@ -114,6 +118,7 @@ def validation_loss(
     joint_dim_weight: float,
     magnet_dim_weight: float,
     magnet_event_weight: float,
+    magnet_release_weight: float,
     joint_direction_weight: float,
     loss_type: str,
     huber_delta: float,
@@ -135,6 +140,7 @@ def validation_loss(
             joint_dim_weight,
             magnet_dim_weight,
             magnet_event_weight,
+            magnet_release_weight,
             joint_direction_weight,
             loss_type,
             huber_delta,
@@ -242,6 +248,7 @@ def main() -> None:
     parser.add_argument("--cache_val_samples", type=int, default=1024, help="Pre-render this many validation samples as uint8 tensors; 0 disables cache.")
     parser.add_argument("--action_chunk_size", type=int, default=8, help="Number of future expert actions predicted from each current observation.")
     parser.add_argument("--event_sample_prob", type=float, default=0.25, help="Probability of sampling a pickup/release transition when a rollout contains one.")
+    parser.add_argument("--release_event_multiplier", type=int, default=1, help="Duplicate release transitions this many times in the event sampling pool.")
     parser.add_argument("--recovery_noise_prob", type=float, default=0.35, help="Probability of perturbing a sampled train state before relabeling with the expert.")
     parser.add_argument("--recovery_noise_steps", type=int, default=5)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -261,6 +268,7 @@ def main() -> None:
     parser.add_argument("--joint_dim_weight", type=float, default=2.0)
     parser.add_argument("--magnet_dim_weight", type=float, default=1.0)
     parser.add_argument("--magnet_event_weight", type=float, default=3.0)
+    parser.add_argument("--magnet_release_weight", type=float, default=1.0)
     parser.add_argument("--joint_direction_weight", type=float, default=0.0)
     parser.add_argument("--loss_type", choices=("mse", "huber", "l1"), default="mse")
     parser.add_argument("--huber_delta", type=float, default=0.25)
@@ -293,6 +301,7 @@ def main() -> None:
             seed=1234,
             cache_samples=args.cache_samples,
             event_sample_prob=args.event_sample_prob,
+            release_event_multiplier=args.release_event_multiplier,
             recovery_noise_prob=args.recovery_noise_prob,
             recovery_noise_steps=args.recovery_noise_steps,
             action_chunk_size=args.action_chunk_size,
@@ -304,6 +313,7 @@ def main() -> None:
             seed=900_000,
             cache_samples=args.cache_val_samples,
             event_sample_prob=args.event_sample_prob,
+            release_event_multiplier=args.release_event_multiplier,
             recovery_noise_prob=0.0,
             recovery_noise_steps=0,
             action_chunk_size=args.action_chunk_size,
@@ -316,6 +326,7 @@ def main() -> None:
             rollout_prefix_max=args.rollout_prefix_max,
             cache_samples=args.cache_samples,
             event_sample_prob=args.event_sample_prob,
+            release_event_multiplier=args.release_event_multiplier,
             recovery_noise_prob=args.recovery_noise_prob,
             recovery_noise_steps=args.recovery_noise_steps,
             action_chunk_size=args.action_chunk_size,
@@ -327,6 +338,7 @@ def main() -> None:
             rollout_prefix_max=args.rollout_prefix_max,
             cache_samples=args.cache_val_samples,
             event_sample_prob=args.event_sample_prob,
+            release_event_multiplier=args.release_event_multiplier,
             recovery_noise_prob=0.0,
             recovery_noise_steps=0,
             action_chunk_size=args.action_chunk_size,
@@ -378,6 +390,7 @@ def main() -> None:
             args.joint_dim_weight,
             args.magnet_dim_weight,
             args.magnet_event_weight,
+            args.magnet_release_weight,
             args.joint_direction_weight,
             args.loss_type,
             args.huber_delta,
@@ -391,10 +404,12 @@ def main() -> None:
             joint_error = (pred[..., :2] - batch["action"][..., :2]).abs().mean()
             grip_error = (pred[..., 2] - batch["action"][..., 2]).abs().mean()
             magnet_active = (batch["action"][..., 2].abs() > 0.5).float().mean()
+            magnet_release = (batch["action"][..., 2] < -0.5).float().mean()
         loss_value = float(loss.detach().cpu())
         joint_score = float((1.0 - joint_error.detach().cpu()).clamp(0.0, 1.0))
         grip_value = float(grip_error.detach().cpu())
         event_value = float(magnet_active.detach().cpu())
+        release_value = float(magnet_release.detach().cpu())
         ema_loss = loss_value if ema_loss is None else 0.97 * ema_loss + 0.03 * loss_value
 
         if step == 1 or step % args.log_every == 0:
@@ -402,7 +417,8 @@ def main() -> None:
             log_line(
                 f"step {step:5d} | loss {loss_value:.4f} | ema {ema_loss:.4f} | "
                 f"joint_score {joint_score:.3f} | grip_err {grip_value:.3f} | "
-                f"mag_active {event_value:.3f} | {step / max(elapsed, 1e-9):.2f} step/s"
+                f"mag_active {event_value:.3f} | mag_release {release_value:.3f} | "
+                f"{step / max(elapsed, 1e-9):.2f} step/s"
             )
 
         if step % args.eval_every == 0 or step == args.steps:
@@ -414,6 +430,7 @@ def main() -> None:
                 args.joint_dim_weight,
                 args.magnet_dim_weight,
                 args.magnet_event_weight,
+                args.magnet_release_weight,
                 args.joint_direction_weight,
                 args.loss_type,
                 args.huber_delta,

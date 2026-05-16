@@ -44,6 +44,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         rollout_prefix_max: int = 120,
         cache_samples: int = 0,
         event_sample_prob: float = 0.35,
+        release_event_multiplier: int = 1,
         recovery_noise_prob: float = 0.35,
         recovery_noise_steps: int = 5,
         action_chunk_size: int = 1,
@@ -52,6 +53,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         self.seed = int(seed)
         self.rollout_prefix_max = int(rollout_prefix_max)
         self.event_sample_prob = float(event_sample_prob)
+        self.release_event_multiplier = max(1, int(release_event_multiplier))
         self.recovery_noise_prob = float(recovery_noise_prob)
         self.recovery_noise_steps = int(recovery_noise_steps)
         self.action_chunk_size = int(action_chunk_size)
@@ -97,7 +99,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
             if magnet > 0.5 and not candidate_state.holding:
                 event_indices.append(i)
             elif magnet < -0.5 and candidate_state.holding:
-                event_indices.append(i)
+                event_indices.extend([i] * self.release_event_multiplier)
         if event_indices and rng.random() < self.event_sample_prob:
             chosen = rng.choice(event_indices)
         else:
@@ -130,6 +132,7 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
         seed: int = 1234,
         cache_samples: int = 0,
         event_sample_prob: float = 0.25,
+        release_event_multiplier: int = 1,
         recovery_noise_prob: float = 0.0,
         recovery_noise_steps: int = 5,
         action_chunk_size: int = 32,
@@ -138,6 +141,7 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
         self.seed = int(seed)
         self.episode_count = int(episode_count)
         self.event_sample_prob = float(event_sample_prob)
+        self.release_event_multiplier = max(1, int(release_event_multiplier))
         self.recovery_noise_prob = float(recovery_noise_prob)
         self.recovery_noise_steps = int(recovery_noise_steps)
         self.action_chunk_size = int(action_chunk_size)
@@ -185,7 +189,7 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
             if magnet > 0.5 and not state.holding:
                 event_indices.append(len(states) - 1)
             elif magnet < -0.5 and state.holding:
-                event_indices.append(len(states) - 1)
+                event_indices.extend([len(states) - 1] * self.release_event_multiplier)
             if is_success(state, self.cfg):
                 break
             state = apply_action(state, action, self.cfg)
