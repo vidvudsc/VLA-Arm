@@ -32,6 +32,9 @@ current RGB image + current robot state -> next 8 actions
 ```
 
 Rollout can use temporal ensembling over overlapping chunks with `--temporal_ensemble`.
+By default it smooths only joint velocities; the magnet command comes from the
+current observation because pickup/release are thresholded state changes. Use
+`--ensemble_gripper` only if you explicitly want to smooth magnet commands too.
 
 The magnet command is persistent:
 

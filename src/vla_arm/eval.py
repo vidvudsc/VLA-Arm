@@ -53,6 +53,7 @@ def rollout(
     render_every: int = 5,
     temporal_ensemble: bool = False,
     ensemble_decay: float = 0.01,
+    ensemble_gripper: bool = False,
     reset_ensemble_on_gripper_change: bool = True,
 ) -> dict[str, object]:
     state = make_scene(seed, cfg)
@@ -77,6 +78,8 @@ def rollout(
                     weighted_actions.append(chunk[age])
                     weights.append(math.exp(-ensemble_decay * age))
             action = sum(w * a for w, a in zip(weights, weighted_actions)) / max(sum(weights), 1e-9)
+            if not ensemble_gripper:
+                action[2] = action_chunk[0, 2]
             pending_chunks = pending_chunks[-len(action_chunk) :]
         else:
             action = policy_action(model, state, cfg, device)
@@ -131,6 +134,7 @@ def main() -> None:
     parser.add_argument("--render_every", type=int, default=5)
     parser.add_argument("--temporal_ensemble", action="store_true")
     parser.add_argument("--ensemble_decay", type=float, default=0.01)
+    parser.add_argument("--ensemble_gripper", action="store_true", help="Also average magnet commands during temporal ensembling.")
     parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     args = parser.parse_args()
 
@@ -149,6 +153,7 @@ def main() -> None:
             render_every=args.render_every,
             temporal_ensemble=args.temporal_ensemble,
             ensemble_decay=args.ensemble_decay,
+            ensemble_gripper=args.ensemble_gripper,
             reset_ensemble_on_gripper_change=not args.no_reset_ensemble_on_gripper_change,
         )
         for idx in range(args.episodes)

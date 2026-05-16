@@ -77,6 +77,7 @@ def main() -> None:
     parser.add_argument("--frames_per_gif", type=int, default=4)
     parser.add_argument("--temporal_ensemble", action="store_true")
     parser.add_argument("--ensemble_decay", type=float, default=0.01)
+    parser.add_argument("--ensemble_gripper", action="store_true", help="Also average magnet commands during temporal ensembling.")
     parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     parser.add_argument("--include_last", action="store_true")
     args = parser.parse_args()
@@ -114,6 +115,7 @@ def main() -> None:
                     render_every=args.render_every,
                     temporal_ensemble=args.temporal_ensemble,
                     ensemble_decay=args.ensemble_decay,
+                    ensemble_gripper=args.ensemble_gripper,
                     reset_ensemble_on_gripper_change=not args.no_reset_ensemble_on_gripper_change,
                 )
             )

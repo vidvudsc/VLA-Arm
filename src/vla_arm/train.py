@@ -157,6 +157,7 @@ def rollout_eval(
     render_every: int,
     temporal_ensemble: bool,
     ensemble_decay: float,
+    ensemble_gripper: bool,
     reset_ensemble_on_gripper_change: bool,
 ) -> dict[str, float]:
     model.eval()
@@ -173,6 +174,7 @@ def rollout_eval(
                 render_every=render_every,
                 temporal_ensemble=temporal_ensemble,
                 ensemble_decay=ensemble_decay,
+                ensemble_gripper=ensemble_gripper,
                 reset_ensemble_on_gripper_change=reset_ensemble_on_gripper_change,
             )
         )
@@ -265,6 +267,7 @@ def main() -> None:
     parser.add_argument("--gif_render_every", type=int, default=5)
     parser.add_argument("--temporal_ensemble", action="store_true", help="Average overlapping predicted action chunks during rollout eval.")
     parser.add_argument("--ensemble_decay", type=float, default=0.01)
+    parser.add_argument("--ensemble_gripper", action="store_true", help="Also average magnet commands during temporal ensembling.")
     parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     parser.add_argument("--no_progress_bar", action="store_true")
     parser.add_argument("--out_dir", default="runs/v0")
@@ -430,6 +433,7 @@ def main() -> None:
                 args.gif_render_every,
                 args.temporal_ensemble,
                 args.ensemble_decay,
+                args.ensemble_gripper,
                 not args.no_reset_ensemble_on_gripper_change,
             )
             hold_bowl = roll["min_bowl_distance_while_holding"]
