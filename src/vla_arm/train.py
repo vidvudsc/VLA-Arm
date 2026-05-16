@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -23,6 +24,11 @@ def log_line(message: str) -> None:
     sys.stdout.flush()
 
 
+def append_jsonl(path: Path, payload: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
 def pick_device(name: str) -> torch.device:
     if name == "auto":
         if torch.backends.mps.is_available():
@@ -35,6 +41,18 @@ def pick_device(name: str) -> torch.device:
 
 def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {key: value.to(device) for key, value in batch.items()}
+
+
+def lr_scale_for_step(step: int, total_steps: int, schedule: str, warmup_steps: int, min_lr_ratio: float) -> float:
+    if schedule == "constant":
+        return 1.0
+    if warmup_steps > 0 and step <= warmup_steps:
+        return max(step / warmup_steps, 1e-6)
+
+    decay_steps = max(1, total_steps - max(0, warmup_steps))
+    progress = min(max((step - max(0, warmup_steps)) / decay_steps, 0.0), 1.0)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
 
 
 def weighted_action_mse(
@@ -214,15 +232,40 @@ def rollout_eval(
     }
 
 
-def save_checkpoint(model: VLAArmPolicy, policy_cfg: PolicyConfig, arm_cfg: ArmConfig, out_dir: Path, step: int) -> None:
+def eval_sort_key(roll: dict[str, float]) -> tuple[float, float, float, float, float, float]:
+    hold_bowl = roll["min_bowl_distance_while_holding"]
+    hold_bowl_penalty = float(hold_bowl) if hold_bowl is not None else 1_000.0
+    return (
+        roll["success_rate"],
+        roll["placed_rate"],
+        roll["released_rate"],
+        roll["picked_rate"],
+        -hold_bowl_penalty,
+        -roll["min_object_distance"],
+    )
+
+
+def save_checkpoint(
+    model: VLAArmPolicy,
+    policy_cfg: PolicyConfig,
+    arm_cfg: ArmConfig,
+    out_dir: Path,
+    step: int,
+    name: str | None = None,
+    metrics: dict[str, object] | None = None,
+) -> None:
     ckpt = {
         "model": model.state_dict(),
         "policy_config": asdict(policy_cfg),
         "arm_config": asdict(arm_cfg),
         "step": step,
+        "metrics": metrics or {},
     }
-    torch.save(ckpt, out_dir / "policy_last.pt")
-    torch.save(ckpt, out_dir / f"policy_step_{step}.pt")
+    if name is None:
+        torch.save(ckpt, out_dir / "policy_last.pt")
+        torch.save(ckpt, out_dir / f"policy_step_{step}.pt")
+    else:
+        torch.save(ckpt, out_dir / name)
 
 
 def main() -> None:
@@ -231,6 +274,9 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr_schedule", choices=("constant", "cosine"), default="constant")
+    parser.add_argument("--warmup_steps", type=int, default=0)
+    parser.add_argument("--min_lr_ratio", type=float, default=0.05)
     parser.add_argument("--weight_decay", type=float, default=0.03)
     parser.add_argument("--patch_size", type=int, default=16)
     parser.add_argument("--hidden", type=int, default=160)
@@ -257,6 +303,7 @@ def main() -> None:
     parser.add_argument("--eval_every", type=int, default=500)
     parser.add_argument("--val_batches", type=int, default=16)
     parser.add_argument("--rollout_episodes", type=int, default=12)
+    parser.add_argument("--save_best", action="store_true", help="Save policy_best.pt whenever rollout eval improves.")
     parser.add_argument("--rollout_seed", type=int, default=50_000)
     parser.add_argument(
         "--eval_seed_mode",
@@ -375,8 +422,13 @@ def main() -> None:
 
     start = time.time()
     ema_loss = None
+    best_key: tuple[float, float, float, float, float, float] | None = None
     model.train()
     for step in tqdm(range(1, args.steps + 1), dynamic_ncols=True, disable=args.no_progress_bar):
+        lr_scale = lr_scale_for_step(step, args.steps, args.lr_schedule, args.warmup_steps, args.min_lr_ratio)
+        for group in optimizer.param_groups:
+            group["lr"] = args.lr * lr_scale
+
         try:
             batch = next(iterator)
         except StopIteration:
@@ -418,6 +470,7 @@ def main() -> None:
                 f"step {step:5d} | loss {loss_value:.4f} | ema {ema_loss:.4f} | "
                 f"joint_score {joint_score:.3f} | grip_err {grip_value:.3f} | "
                 f"mag_active {event_value:.3f} | mag_release {release_value:.3f} | "
+                f"lr {optimizer.param_groups[0]['lr']:.2e} | "
                 f"{step / max(elapsed, 1e-9):.2f} step/s"
             )
 
@@ -463,6 +516,18 @@ def main() -> None:
                 f"hold_bowl {hold_bowl_text} | "
                 f"avg_steps {roll['avg_steps']:.1f}"
             )
+            metrics = {
+                "step": step,
+                "lr": optimizer.param_groups[0]["lr"],
+                "val_loss": val,
+                **roll,
+            }
+            append_jsonl(out_dir / "metrics.jsonl", metrics)
+            current_key = eval_sort_key(roll)
+            if args.save_best and (best_key is None or current_key > best_key):
+                best_key = current_key
+                save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step, name="policy_best.pt", metrics=metrics)
+                log_line(f"best {step:5d} | saved policy_best.pt")
 
         if step % args.save_every == 0 or step == args.steps:
             save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step)
