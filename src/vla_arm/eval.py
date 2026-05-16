@@ -53,6 +53,7 @@ def rollout(
     render_every: int = 5,
     temporal_ensemble: bool = False,
     ensemble_decay: float = 0.01,
+    reset_ensemble_on_gripper_change: bool = True,
 ) -> dict[str, object]:
     state = make_scene(seed, cfg)
     frames = []
@@ -86,8 +87,12 @@ def rollout(
         bowl_pos = (state.bowl.x, state.bowl.y)
         if not was_holding and state.holding:
             picked_once = True
+            if temporal_ensemble and reset_ensemble_on_gripper_change:
+                pending_chunks.clear()
         if was_holding and not state.holding:
             released_once = True
+            if temporal_ensemble and reset_ensemble_on_gripper_change:
+                pending_chunks.clear()
         if not state.holding and not state.placed:
             min_object_distance = min(min_object_distance, distance(tip, obj_pos))
         min_bowl_distance = min(min_bowl_distance, distance(tip, bowl_pos))
@@ -126,6 +131,7 @@ def main() -> None:
     parser.add_argument("--render_every", type=int, default=5)
     parser.add_argument("--temporal_ensemble", action="store_true")
     parser.add_argument("--ensemble_decay", type=float, default=0.01)
+    parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     args = parser.parse_args()
 
     device = pick_device(args.device)
@@ -143,6 +149,7 @@ def main() -> None:
             render_every=args.render_every,
             temporal_ensemble=args.temporal_ensemble,
             ensemble_decay=args.ensemble_decay,
+            reset_ensemble_on_gripper_change=not args.no_reset_ensemble_on_gripper_change,
         )
         for idx in range(args.episodes)
     ]

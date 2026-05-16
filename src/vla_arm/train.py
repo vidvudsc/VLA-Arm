@@ -157,6 +157,7 @@ def rollout_eval(
     render_every: int,
     temporal_ensemble: bool,
     ensemble_decay: float,
+    reset_ensemble_on_gripper_change: bool,
 ) -> dict[str, float]:
     model.eval()
     results = []
@@ -172,6 +173,7 @@ def rollout_eval(
                 render_every=render_every,
                 temporal_ensemble=temporal_ensemble,
                 ensemble_decay=ensemble_decay,
+                reset_ensemble_on_gripper_change=reset_ensemble_on_gripper_change,
             )
         )
     model.train()
@@ -181,6 +183,7 @@ def rollout_eval(
     placed_rate = sum(bool(item["placed"]) for item in results) / max(1, len(results))
     picked_rate = sum(bool(item["picked_once"]) for item in results) / max(1, len(results))
     released_rate = sum(bool(item["released_once"]) for item in results) / max(1, len(results))
+    min_bowl_distance = sum(float(item["min_bowl_distance"]) for item in results) / max(1, len(results))
     min_object_distance = sum(float(item["min_object_distance"]) for item in results) / max(1, len(results))
     final_object_distance = sum(float(item["final_object_distance"]) for item in results) / max(1, len(results))
     bowl_when_holding = [
@@ -197,6 +200,7 @@ def rollout_eval(
         "picked_rate": picked_rate,
         "released_rate": released_rate,
         "min_object_distance": min_object_distance,
+        "min_bowl_distance": min_bowl_distance,
         "final_object_distance": final_object_distance,
         "min_bowl_distance_while_holding": min_bowl_distance_while_holding,
     }
@@ -261,6 +265,7 @@ def main() -> None:
     parser.add_argument("--gif_render_every", type=int, default=5)
     parser.add_argument("--temporal_ensemble", action="store_true", help="Average overlapping predicted action chunks during rollout eval.")
     parser.add_argument("--ensemble_decay", type=float, default=0.01)
+    parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     parser.add_argument("--no_progress_bar", action="store_true")
     parser.add_argument("--out_dir", default="runs/v0")
     args = parser.parse_args()
@@ -425,11 +430,16 @@ def main() -> None:
                 args.gif_render_every,
                 args.temporal_ensemble,
                 args.ensemble_decay,
+                not args.no_reset_ensemble_on_gripper_change,
             )
+            hold_bowl = roll["min_bowl_distance_while_holding"]
+            hold_bowl_text = "na" if hold_bowl is None else f"{hold_bowl:.1f}px"
             log_line(
                 f"eval {step:5d} | val_loss {val:.4f} | success {roll['success_rate']:.3f} | "
-                f"picked {roll['picked_rate']:.3f} | placed {roll['placed_rate']:.3f} | "
-                f"holding_end {roll['held_rate']:.3f} | min_obj {roll['min_object_distance']:.1f}px | "
+                f"picked {roll['picked_rate']:.3f} | released {roll['released_rate']:.3f} | "
+                f"placed {roll['placed_rate']:.3f} | holding_end {roll['held_rate']:.3f} | "
+                f"min_obj {roll['min_object_distance']:.1f}px | min_bowl {roll['min_bowl_distance']:.1f}px | "
+                f"hold_bowl {hold_bowl_text} | "
                 f"avg_steps {roll['avg_steps']:.1f}"
             )
 
