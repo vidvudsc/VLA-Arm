@@ -251,6 +251,7 @@ def save_checkpoint(
     arm_cfg: ArmConfig,
     out_dir: Path,
     step: int,
+    optimizer: torch.optim.Optimizer | None = None,
     name: str | None = None,
     metrics: dict[str, object] | None = None,
 ) -> None:
@@ -261,11 +262,20 @@ def save_checkpoint(
         "step": step,
         "metrics": metrics or {},
     }
+    if optimizer is not None:
+        ckpt["optimizer"] = optimizer.state_dict()
     if name is None:
         torch.save(ckpt, out_dir / "policy_last.pt")
         torch.save(ckpt, out_dir / f"policy_step_{step}.pt")
     else:
         torch.save(ckpt, out_dir / name)
+
+
+def move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
 
 
 def main() -> None:
@@ -327,6 +337,7 @@ def main() -> None:
     parser.add_argument("--ensemble_gripper", action="store_true", help="Also average magnet commands during temporal ensembling.")
     parser.add_argument("--no_reset_ensemble_on_gripper_change", action="store_true")
     parser.add_argument("--no_progress_bar", action="store_true")
+    parser.add_argument("--resume", default="", help="Resume model weights, and optimizer state when present, from a checkpoint.")
     parser.add_argument("--out_dir", default="runs/v0")
     args = parser.parse_args()
 
@@ -416,6 +427,14 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    start_step = 0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        start_step = int(ckpt.get("step", 0))
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            move_optimizer_state(optimizer, device)
 
     log_line(f"device: {device}")
     log_line(f"params: {count_parameters(model):,}")
@@ -424,13 +443,15 @@ def main() -> None:
     if args.dataset_mode == "episode":
         log_line(f"episodes: train {args.episode_count:,} | val {args.val_episode_count:,}")
     log_line(f"train samples: {len(train_dataset):,} | val samples: {len(val_dataset):,}")
+    if args.resume:
+        log_line(f"resumed: {args.resume} at step {start_step:,}")
     log_line(json.dumps({"policy": asdict(policy_cfg), "arm": asdict(arm_cfg)}, indent=2))
 
     start = time.time()
     ema_loss = None
     best_key: tuple[float, float, float, float, float, float] | None = None
     model.train()
-    for step in tqdm(range(1, args.steps + 1), dynamic_ncols=True, disable=args.no_progress_bar):
+    for step in tqdm(range(start_step + 1, args.steps + 1), dynamic_ncols=True, disable=args.no_progress_bar):
         lr_scale = lr_scale_for_step(step, args.steps, args.lr_schedule, args.warmup_steps, args.min_lr_ratio)
         for group in optimizer.param_groups:
             group["lr"] = args.lr * lr_scale
@@ -532,11 +553,11 @@ def main() -> None:
             current_key = eval_sort_key(roll)
             if args.save_best and (best_key is None or current_key > best_key):
                 best_key = current_key
-                save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step, name="policy_best.pt", metrics=metrics)
+                save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step, optimizer=optimizer, name="policy_best.pt", metrics=metrics)
                 log_line(f"best {step:5d} | saved policy_best.pt")
 
         if step % args.save_every == 0 or step == args.steps:
-            save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step)
+            save_checkpoint(model, policy_cfg, arm_cfg, out_dir, step, optimizer=optimizer)
 
 
 if __name__ == "__main__":
