@@ -295,6 +295,8 @@ def main() -> None:
     parser.add_argument("--action_chunk_size", type=int, default=8, help="Number of future expert actions predicted from each current observation.")
     parser.add_argument("--event_sample_prob", type=float, default=0.25, help="Probability of sampling a pickup/release transition when a rollout contains one.")
     parser.add_argument("--release_event_multiplier", type=int, default=1, help="Duplicate release transitions this many times in the event sampling pool.")
+    parser.add_argument("--occlusion_sample_prob", type=float, default=0.0, help="Probability of sampling an off-trajectory state where the arm occludes/crosses the object.")
+    parser.add_argument("--allow_initial_object_occlusion", action="store_true", help="Allow rollout scenes to start with the object occluded by the arm.")
     parser.add_argument("--recovery_noise_prob", type=float, default=0.35, help="Probability of perturbing a sampled train state before relabeling with the expert.")
     parser.add_argument("--recovery_noise_steps", type=int, default=5)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -329,7 +331,7 @@ def main() -> None:
     args = parser.parse_args()
 
     device = pick_device(args.device)
-    arm_cfg = ArmConfig()
+    arm_cfg = ArmConfig(avoid_initial_object_occlusion=not args.allow_initial_object_occlusion)
     policy_cfg = PolicyConfig(
         image_size=arm_cfg.world_size,
         patch_size=args.patch_size,
@@ -349,6 +351,7 @@ def main() -> None:
             cache_samples=args.cache_samples,
             event_sample_prob=args.event_sample_prob,
             release_event_multiplier=args.release_event_multiplier,
+            occlusion_sample_prob=args.occlusion_sample_prob,
             recovery_noise_prob=args.recovery_noise_prob,
             recovery_noise_steps=args.recovery_noise_steps,
             action_chunk_size=args.action_chunk_size,
@@ -361,6 +364,7 @@ def main() -> None:
             cache_samples=args.cache_val_samples,
             event_sample_prob=args.event_sample_prob,
             release_event_multiplier=args.release_event_multiplier,
+            occlusion_sample_prob=args.occlusion_sample_prob,
             recovery_noise_prob=0.0,
             recovery_noise_steps=0,
             action_chunk_size=args.action_chunk_size,
@@ -374,6 +378,7 @@ def main() -> None:
             cache_samples=args.cache_samples,
             event_sample_prob=args.event_sample_prob,
             release_event_multiplier=args.release_event_multiplier,
+            occlusion_sample_prob=args.occlusion_sample_prob,
             recovery_noise_prob=args.recovery_noise_prob,
             recovery_noise_steps=args.recovery_noise_steps,
             action_chunk_size=args.action_chunk_size,
@@ -386,6 +391,7 @@ def main() -> None:
             cache_samples=args.cache_val_samples,
             event_sample_prob=args.event_sample_prob,
             release_event_multiplier=args.release_event_multiplier,
+            occlusion_sample_prob=args.occlusion_sample_prob,
             recovery_noise_prob=0.0,
             recovery_noise_steps=0,
             action_chunk_size=args.action_chunk_size,

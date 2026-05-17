@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import math
 import random
+from dataclasses import replace
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .env import ArmConfig, apply_action, expert_action, is_success, make_scene, state_vector
+from .env import (
+    ArmConfig,
+    ArmState,
+    apply_action,
+    clone_state,
+    distance_to_object,
+    expert_action,
+    is_success,
+    make_scene,
+    object_is_occluded_by_arm,
+    state_vector,
+    wrap_angle,
+)
 from .render import image_to_tensor, image_to_uint8_tensor, render_state
 
 
@@ -35,6 +49,29 @@ def render_sample(state, cfg: ArmConfig, action_chunk: np.ndarray, cache_uint8: 
     }
 
 
+def make_occlusion_recovery_state(seed: int, cfg: ArmConfig) -> ArmState:
+    rng = random.Random(seed)
+    occlusion_cfg = replace(cfg, avoid_initial_object_occlusion=False)
+    fallback = make_scene(seed, occlusion_cfg)
+
+    for attempt in range(500):
+        state = make_scene(seed + 9973 * (attempt + 1), occlusion_cfg)
+        candidate = clone_state(state)
+        candidate.shoulder = rng.uniform(-math.pi, math.pi)
+        candidate.elbow = rng.uniform(-math.pi, math.pi)
+        candidate.holding = False
+        candidate.placed = False
+        candidate.step_count = rng.randrange(max(1, cfg.max_steps // 2))
+
+        if object_is_occluded_by_arm(candidate, cfg) and distance_to_object(candidate, cfg) > cfg.pick_radius * 1.5:
+            return candidate
+
+    # If random search misses, at least return a scene where occlusion was allowed.
+    fallback.shoulder = wrap_angle(fallback.shoulder + rng.uniform(-1.0, 1.0))
+    fallback.elbow = wrap_angle(fallback.elbow + rng.uniform(-1.0, 1.0))
+    return fallback
+
+
 class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
     def __init__(
         self,
@@ -45,6 +82,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         cache_samples: int = 0,
         event_sample_prob: float = 0.35,
         release_event_multiplier: int = 1,
+        occlusion_sample_prob: float = 0.0,
         recovery_noise_prob: float = 0.35,
         recovery_noise_steps: int = 5,
         action_chunk_size: int = 1,
@@ -54,6 +92,7 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
         self.rollout_prefix_max = int(rollout_prefix_max)
         self.event_sample_prob = float(event_sample_prob)
         self.release_event_multiplier = max(1, int(release_event_multiplier))
+        self.occlusion_sample_prob = float(occlusion_sample_prob)
         self.recovery_noise_prob = float(recovery_noise_prob)
         self.recovery_noise_steps = int(recovery_noise_steps)
         self.action_chunk_size = int(action_chunk_size)
@@ -82,6 +121,12 @@ class ExpertTransitionDataset(Dataset[dict[str, torch.Tensor]]):
     def _make_sample(self, idx: int, cache_uint8: bool) -> dict[str, torch.Tensor]:
         seed = self.seed + int(idx)
         rng = random.Random(seed)
+        if rng.random() < self.occlusion_sample_prob:
+            state = make_occlusion_recovery_state(seed + 31_337, self.cfg)
+            action = expert_action(state, self.cfg)
+            action_chunk = expert_action_chunk(state, self.cfg, self.action_chunk_size, first_action=action)
+            return render_sample(state, self.cfg, action_chunk, cache_uint8)
+
         state = make_scene(seed, self.cfg)
         trajectory = []
         for _ in range(self.rollout_prefix_max + 1):
@@ -133,6 +178,7 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
         cache_samples: int = 0,
         event_sample_prob: float = 0.25,
         release_event_multiplier: int = 1,
+        occlusion_sample_prob: float = 0.0,
         recovery_noise_prob: float = 0.0,
         recovery_noise_steps: int = 5,
         action_chunk_size: int = 32,
@@ -142,6 +188,7 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
         self.episode_count = int(episode_count)
         self.event_sample_prob = float(event_sample_prob)
         self.release_event_multiplier = max(1, int(release_event_multiplier))
+        self.occlusion_sample_prob = float(occlusion_sample_prob)
         self.recovery_noise_prob = float(recovery_noise_prob)
         self.recovery_noise_steps = int(recovery_noise_steps)
         self.action_chunk_size = int(action_chunk_size)
@@ -205,6 +252,12 @@ class ExpertEpisodeDataset(Dataset[dict[str, torch.Tensor]]):
 
     def _make_sample(self, idx: int, cache_uint8: bool) -> dict[str, torch.Tensor]:
         rng = random.Random(self.seed * 1_000_003 + int(idx))
+        if rng.random() < self.occlusion_sample_prob:
+            state = make_occlusion_recovery_state(self.seed + int(idx) + 31_337, self.cfg)
+            action = expert_action(state, self.cfg)
+            action_chunk = expert_action_chunk(state, self.cfg, self.action_chunk_size, first_action=action)
+            return render_sample(state, self.cfg, action_chunk, cache_uint8)
+
         episode_idx, step_idx = self._choose_location(rng)
         episode = self.episodes[episode_idx]
         state = episode["states"][step_idx]
