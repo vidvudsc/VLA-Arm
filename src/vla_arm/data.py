@@ -13,11 +13,14 @@ from .env import (
     ArmState,
     apply_action,
     clone_state,
+    distance_to_bowl,
     distance_to_object,
     expert_action,
+    forward_kinematics,
     is_success,
     make_scene,
     object_is_occluded_by_arm,
+    point_segment_distance,
     state_vector,
     wrap_angle,
 )
@@ -49,26 +52,53 @@ def render_sample(state, cfg: ArmConfig, action_chunk: np.ndarray, cache_uint8: 
     }
 
 
-def make_occlusion_recovery_state(seed: int, cfg: ArmConfig) -> ArmState:
+def target_is_occluded_by_arm(
+    state: ArmState,
+    cfg: ArmConfig,
+    target: tuple[float, float],
+    target_radius: float,
+) -> bool:
+    base, joint, end = forward_kinematics(state, cfg)
+    clearance = target_radius + cfg.object_occlusion_clearance
+    return min(point_segment_distance(target, base, joint), point_segment_distance(target, joint, end)) < clearance
+
+
+def make_occlusion_recovery_state(seed: int, cfg: ArmConfig, phase: str = "mixed") -> ArmState:
     rng = random.Random(seed)
     occlusion_cfg = replace(cfg, avoid_initial_object_occlusion=False)
     fallback = make_scene(seed, occlusion_cfg)
+    if phase == "mixed":
+        phase = "bowl" if rng.random() < 0.5 else "object"
 
     for attempt in range(500):
         state = make_scene(seed + 9973 * (attempt + 1), occlusion_cfg)
         candidate = clone_state(state)
         candidate.shoulder = rng.uniform(-math.pi, math.pi)
         candidate.elbow = rng.uniform(-math.pi, math.pi)
-        candidate.holding = False
+        candidate.holding = phase == "bowl"
         candidate.placed = False
         candidate.step_count = rng.randrange(max(1, cfg.max_steps // 2))
 
-        if object_is_occluded_by_arm(candidate, cfg) and distance_to_object(candidate, cfg) > cfg.pick_radius * 1.5:
+        if phase == "object":
+            target_occluded = object_is_occluded_by_arm(candidate, cfg)
+            target_far = distance_to_object(candidate, cfg) > cfg.pick_radius * 1.5
+        else:
+            target_occluded = target_is_occluded_by_arm(
+                candidate,
+                cfg,
+                (candidate.bowl.x, candidate.bowl.y),
+                cfg.bowl_radius,
+            )
+            target_far = distance_to_bowl(candidate, cfg) > cfg.place_radius * 1.5
+
+        if target_occluded and target_far:
             return candidate
 
     # If random search misses, at least return a scene where occlusion was allowed.
     fallback.shoulder = wrap_angle(fallback.shoulder + rng.uniform(-1.0, 1.0))
     fallback.elbow = wrap_angle(fallback.elbow + rng.uniform(-1.0, 1.0))
+    fallback.holding = phase == "bowl"
+    fallback.placed = False
     return fallback
 
 
