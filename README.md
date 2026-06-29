@@ -49,7 +49,8 @@ Positive magnet command picks when the tip is close to the object. While holding
 ## Quick Start
 
 ```bash
-cd /Users/vidvudscalitis/Desktop/CODING/MultiModal/VLA-Arm
+git clone https://github.com/vidvudsc/VLA-Arm.git
+cd VLA-Arm
 python -m pip install -e .
 
 python scripts/make_examples.py --out_dir runs/examples
